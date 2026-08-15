@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>قارئ الاختبارات الذكي</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+    <style>
+        :root {
+            --bg-color: #f4f7f6; --text-color: #333; --card-bg: #fff; --btn-color: #007bff;
+        }
+        body { font-family: 'Segoe UI', sans-serif; background: var(--bg-color); color: var(--text-color); margin: 0; display: flex; justify-content: center; padding: 20px; }
+        .container { background: var(--card-bg); padding: 20px; border-radius: 10px; box-shadow: 0 4px 10px rgba(0,0,0,0.1); width: 100%; max-width: 800px; }
+        h1 { text-align: center; color: var(--btn-color); }
+        .upload-section { border: 2px dashed #ccc; padding: 20px; text-align: center; border-radius: 10px; margin-bottom: 20px; cursor: pointer; transition: 0.3s; }
+        .upload-section:hover { border-color: var(--btn-color); background: #f0f8ff; }
+        .hidden { display: none; }
+        
+        .controls { display: flex; justify-content: center; gap: 10px; margin: 20px 0; flex-wrap: wrap; }
+        .btn { background: var(--btn-color); color: white; border: none; padding: 10px 15px; border-radius: 5px; cursor: pointer; }
+        .btn:disabled { background: #ccc; cursor: not-allowed; }
+        
+        .quiz-box { border: 1px solid #eee; padding: 15px; border-radius: 10px; margin-top: 15px; }
+        .question { font-size: 1.2rem; margin-bottom: 15px; font-weight: bold; }
+        .options { display: flex; flex-direction: column; gap: 8px; }
+        .option { padding: 10px; border: 1px solid #ddd; border-radius: 5px; cursor: pointer; }
+        .option.selected { background: #007bff; color: white; border-color: #007bff; }
+        .option.correct { background: #28a745; color: white; border-color: #28a745; pointer-events: none; }
+        .option.wrong { background: #dc3545; color: white; border-color: #dc3545; pointer-events: none; }
+
+        #feedback { margin-top: 15px; padding: 10px; border-radius: 5px; display: none; }
+        #feedback.correct { background: #d4edda; color: #155724; display: block; border: 1px solid #c3e6cb; }
+        #feedback.wrong { background: #f8d7da; color: #721c24; display: block; border: 1px solid #f5c6cb; }
+        .explanation { margin-top: 5px; font-weight: bold; }
+        
+        #result-box { text-align: center; margin-top: 20px; display: none; }
+    </style>
+</head>
+<body>
+<div class="container">
+    <h1>📖 مساعد المذاكرة الذكي (PDF)</h1>
+    <div class="upload-section" id="upload-area">
+        <p>اسحب ملف الـ PDF هنا أو اضغط للاختيار</p>
+        <p style="font-size: 0.8rem; color: #888;">(جرب ارفع ملف فيه أسئلة)</p>
+        <input type="file" id="file-input" accept=".pdf" style="display: none;">
+    </div>
+
+    <div class="controls hidden" id="controls-area">
+        <span id="file-name" style="line-height: 35px; font-weight: bold;"></span>
+        <button class="btn" id="generate-btn" onclick="startQuizFromPDF()">🔄 استخرج الأسئلة وابدأ</button>
+    </div>
+
+    <div id="loading" class="hidden" style="text-align: center;">⏳ جاري قراءة الملف واستخراج الأسئلة...</div>
+
+    <div id="quiz-area" class="quiz-box hidden">
+        <div class="header" style="display: flex; justify-content: space-between;">
+            <span id="score">0 / 0</span>
+        </div>
+        <div class="question" id="question-text">السؤال هنا</div>
+        <div class="options" id="options-container"></div>
+        <div id="feedback">
+            <span id="feedback-text"></span>
+            <div class="explanation" id="explanation-text"></div>
+        </div>
+        <button class="btn" id="next-btn" onclick="nextQuestion()" style="margin-top: 15px; width: 100%; display: none;">السؤال التالي</button>
+    </div>
+    <div id="result-box">
+        <h2>🎉 انتهى الاختبار!</h2>
+        <p id="final-score">لقد أجبت على 0 من 0 أسئلة بشكل صحيح.</p>
+        <button class="btn" onclick="location.reload()">رفع ملف جديد</button>
+    </div>
+</div>
+
+<script>
+    let currentQuestions = [];
+    let currentIndex = 0;
+    let score = 0;
+    let isAnswered = false;
+
+    // 1. رفع الملف
+    document.getElementById('upload-area').addEventListener('click', () => document.getElementById('file-input').click());
+    document.getElementById('file-input').addEventListener('change', handleFileSelect);
+    document.getElementById('upload-area').addEventListener('dragover', (e) => { e.preventDefault(); e.currentTarget.style.borderColor = '#007bff'; });
+    document.getElementById('upload-area').addEventListener('dragleave', (e) => { e.currentTarget.style.borderColor = '#ccc'; });
+    document.getElementById('upload-area').addEventListener('drop', (e) => {
+        e.preventDefault();
+        document.getElementById('file-input').files = e.dataTransfer.files;
+        handleFileSelect();
+    });
+
+    function handleFileSelect() {
+        const file = document.getElementById('file-input').files[0];
+        if (file) {
+            document.getElementById('file-name').innerText = file.name;
+            document.getElementById('controls-area').classList.remove('hidden');
+            document.getElementById('upload-area').style.display = 'none';
+        }
+    }
+
+    // 2. قراءة الـ PDF واستخراج النص
+    async function startQuizFromPDF() {
+        const file = document.getElementById('file-input').files[0];
+        if (!file) return alert('يرجى اختيار ملف PDF أولاً');
+        
+        document.getElementById('controls-area').classList.add('hidden');
+        document.getElementById('loading').classList.remove('hidden');
+
+        const reader = new FileReader();
+        reader.onload = async function(e) {
+            const typedarray = new Uint8Array(e.target.result);
+            
+            // قراءة ملف PDF باستخدام pdf.js
+            const pdf = await pdfjsLib.getDocument(typedarray).promise;
+            let fullText = "";
+            for (let i = 1; i <= pdf.numPages; i++) {
+                const page = await pdf.getPage(i);
+                const content = await page.getTextContent();
+                fullText += content.items.map(item => item.str).join(" ") + " ";
+            }
+
+            document.getElementById('loading').classList.add('hidden');
+            // معالجة النص لتحويله لأسئلة (خوارزمية بسيطة)
+            extractQuestionsFromText(fullText);
+        };
+        reader.readAsArrayBuffer(file);
+    }
+
+    // 3. خوارزمية بسيطة لاستخراج الأسئلة (يمكنك تطويرها لاحقاً)
+    function extractQuestionsFromText(text) {
+        // مثال: يفصل النص بناءً على علامات الاستفهام أو الكلمات المفتاحية
+        // هنا قمت بمحاكاة استخراج أسئلة وهمية للشرح
+        const lines = text.split('\n').filter(line => line.trim().length > 20);
+        if(lines.length < 2) {
+            alert("لم أجد أسئلة واضحة في هذا الملف. تأكد من احتوائه على أسئلة نصية.");
+            return;
+        }
+
+        currentQuestions = [
+            { question: lines[0], options: ["هذا خيار افتراضي 1", "هذا خيار افتراضي 2", "هذا خيار افتراضي 3", "الجواب الصحيح"], correct: 3, explanation: "هذا شرح مبني على النص الذي قرأته من ملفك." },
+            { question: lines[1] || "سؤال افتراضي ثانٍ", options: ["خيار 1", "خيار 2", "صحيح", "خيار 4"], correct: 2, explanation: "تم استخراج هذا السؤال من ملفك." }
+        ];
+
+        startQuiz();
+    }
+
+    // 4. بدأ الاختبار وعرض الأسئلة (نفس الوظائف القديمة)
+    function startQuiz() {
+        currentIndex = 0;
+        score = 0;
+        document.getElementById('quiz-area').classList.remove('hidden');
+        document.getElementById('result-box').style.display = 'none';
+        loadQuestion();
+    }
+
+    function loadQuestion() {
+        if (currentIndex >= currentQuestions.length) {
+            document.getElementById('quiz-area').classList.add('hidden');
+            document.getElementById('result-box').style.display = 'block';
+            document.getElementById('final-score').innerText = `لقد أجبت على ${score} من ${currentQuestions.length} أسئلة بشكل صحيح.`;
+            return;
+        }
+
+        const q = currentQuestions[currentIndex];
+        document.getElementById('question-text').innerText = `سؤال ${currentIndex + 1}: ${q.question}`;
+        document.getElementById('score').innerText = `${score} / ${currentQuestions.length}`;
+        document.getElementById('feedback').className = 'hidden';
+        document.getElementById('next-btn').style.display = 'none';
+        isAnswered = false;
+
+        const container = document.getElementById('options-container');
+        container.innerHTML = '';
+        q.options.forEach((text, idx) => {
+            const div = document.createElement('div');
+            div.className = 'option';
+            div.innerText = text;
+            div.onclick = () => checkAnswer(idx, div, q);
+            container.appendChild(div);
+        });
+    }
+
+    function checkAnswer(selectedIdx, element, q) {
+        if (isAnswered) return;
+        isAnswered = true;
+
+        const options = document.querySelectorAll('.option');
+        options.forEach((opt, idx) => {
+            opt.style.pointerEvents = 'none';
+            if (idx === q.correct) opt.classList.add('correct');
+            else if (idx === selectedIdx && selectedIdx !== q.correct) opt.classList.add('wrong');
+        });
+
+        const feedback = document.getElementById('feedback');
+        const feedbackText = document.getElementById('feedback-text');
+        const explanationText = document.getElementById('explanation-text');
+
+        if (selectedIdx === q.correct) {
+            score++;
+            document.getElementById('score').innerText = `${score} / ${currentQuestions.length}`;
+            feedback.className = 'correct';
+            feedbackText.innerText = "✅ إجابة صحيحة!";
+            explanationText.innerText = q.explanation;
+        } else {
+            feedback.className = 'wrong';
+            feedbackText.innerText = "❌ إجابة خاطئة. الإجابة الصحيحة هي: " + q.options[q.correct];
+            explanationText.innerText = q.explanation;
+        }
+        document.getElementById('next-btn').style.display = 'block';
+    }
+
+    function nextQuestion() {
+        currentIndex++;
+        loadQuestion();
+    }
+</script>
+</body>
+</html>
